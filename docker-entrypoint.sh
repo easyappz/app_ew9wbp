@@ -6,7 +6,6 @@ echo "==> Django Pre-Start Script"
 # Create persistent dirs
 /bin/mkdir -p /app/persistent/db
 /bin/mkdir -p /app/persistent/media
-/bin/chown -R appuser:appuser /app/persistent
 
 # Run migrations
 echo "==> Running database migrations..."
@@ -20,6 +19,8 @@ if [ "$DB_INIT" = true ]; then
     DJANGO_SETTINGS_MODULE="config.settings" DJANGO_SUPERUSER_PASSWORD=easyappzadmin /opt/venv/bin/python \
         manage.py createsuperuser --noinput --username admin --email admin@easyappz.ru
 fi
+
+/bin/chown -R appuser:appuser /app/persistent
 
 echo "==> Pre-start script completed successfully!"
 
