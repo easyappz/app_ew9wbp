@@ -1,19 +1,30 @@
-from rest_framework.views import APIView
+from rest_framework import generics, status
 from rest_framework.response import Response
-from django.utils import timezone
 from drf_spectacular.utils import extend_schema
+from .models import Message
 from .serializers import MessageSerializer
 
 
-class HelloView(APIView):
+class MessageListCreateView(generics.ListCreateAPIView):
     """
-    A simple API endpoint that returns a greeting message.
+    API endpoint for listing all messages and creating new messages.
+    GET: Returns all messages ordered by timestamp.
+    POST: Creates a new message with username, message text, and user_color.
     """
+    queryset = Message.objects.all().order_by('timestamp')
+    serializer_class = MessageSerializer
 
     @extend_schema(
-        responses={200: MessageSerializer}, description="Get a hello world message"
+        responses={200: MessageSerializer(many=True)},
+        description="Retrieve all chat messages ordered by timestamp."
     )
-    def get(self, request):
-        data = {"message": "Hello!", "timestamp": timezone.now()}
-        serializer = MessageSerializer(data)
-        return Response(serializer.data)
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
+    @extend_schema(
+        request=MessageSerializer,
+        responses={201: MessageSerializer},
+        description="Create a new chat message."
+    )
+    def post(self, request, *args, **kwargs):
+        return super().post(request, *args, **kwargs)
