@@ -1,148 +1,115 @@
 import json
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
-from django.utils import timezone
+from .models import ChatMessage
+from .serializers import ChatMessageSerializer
 
 
 class ChatConsumer(AsyncWebsocketConsumer):
-    """
-    WebSocket consumer for chat functionality.
-    Handles real-time messaging, online count, and typing indicators.
-    """
+    room_group_name = 'chat_room'
+    connected_users = set()
 
     async def connect(self):
-        """Handle WebSocket connection."""
-        self.room_group_name = "chat_room"
-
-        # Join room group
         await self.channel_layer.group_add(
             self.room_group_name,
             self.channel_name
         )
-
         await self.accept()
-
-        # Increment and broadcast online count
+        
+        self.connected_users.add(self.channel_name)
+        
         await self.channel_layer.group_send(
             self.room_group_name,
             {
-                "type": "user_count_update",
-                "action": "increment"
+                'type': 'online_count',
+                'count': len(self.connected_users)
             }
         )
 
     async def disconnect(self, close_code):
-        """Handle WebSocket disconnection."""
-        # Leave room group
+        if self.channel_name in self.connected_users:
+            self.connected_users.remove(self.channel_name)
+        
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'online_count',
+                'count': len(self.connected_users)
+            }
+        )
+        
         await self.channel_layer.group_discard(
             self.room_group_name,
             self.channel_name
         )
 
-        # Decrement and broadcast online count
-        await self.channel_layer.group_send(
-            self.room_group_name,
-            {
-                "type": "user_count_update",
-                "action": "decrement"
-            }
-        )
-
     async def receive(self, text_data):
-        """Receive message from WebSocket."""
-        try:
-            data = json.loads(text_data)
-            message_type = data.get("type")
+        data = json.loads(text_data)
+        message_type = data.get('type')
 
-            if message_type == "chat_message":
-                await self.handle_chat_message(data)
-            elif message_type == "typing":
-                await self.handle_typing(data)
-        except json.JSONDecodeError:
-            pass
+        if message_type == 'chat_message':
+            username = data.get('username')
+            user_color = data.get('user_color')
+            message = data.get('message')
 
-    async def handle_chat_message(self, data):
-        """Handle incoming chat message."""
-        message_text = data.get("message", "")
-        username = data.get("username", "Guest")
-        user_color = data.get("user_color", "#000000")
+            chat_message = await self.save_message(username, user_color, message)
 
-        if not message_text:
-            return
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'chat_message',
+                    'id': chat_message['id'],
+                    'username': chat_message['username'],
+                    'user_color': chat_message['user_color'],
+                    'message': chat_message['message'],
+                    'timestamp': chat_message['timestamp']
+                }
+            )
 
-        # Save message to database
-        message_data = await self.save_message(username, message_text, user_color)
+        elif message_type == 'typing':
+            username = data.get('username')
+            is_typing = data.get('is_typing', False)
 
-        # Broadcast message to room group
-        await self.channel_layer.group_send(
-            self.room_group_name,
-            {
-                "type": "chat_message_broadcast",
-                "message": message_data
-            }
-        )
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'typing_indicator',
+                    'username': username,
+                    'is_typing': is_typing,
+                    'sender_channel': self.channel_name
+                }
+            )
 
-    async def handle_typing(self, data):
-        """Handle typing indicator."""
-        username = data.get("username", "Guest")
-        is_typing = data.get("is_typing", False)
-
-        # Broadcast typing status to room group
-        await self.channel_layer.group_send(
-            self.room_group_name,
-            {
-                "type": "typing_indicator",
-                "username": username,
-                "is_typing": is_typing,
-                "sender_channel": self.channel_name
-            }
-        )
-
-    async def chat_message_broadcast(self, event):
-        """Send chat message to WebSocket."""
-        message = event["message"]
-
+    async def chat_message(self, event):
         await self.send(text_data=json.dumps({
-            "type": "chat_message",
-            "message": message
+            'type': 'chat_message',
+            'id': event['id'],
+            'username': event['username'],
+            'user_color': event['user_color'],
+            'message': event['message'],
+            'timestamp': event['timestamp']
         }))
 
     async def typing_indicator(self, event):
-        """Send typing indicator to WebSocket."""
-        # Don't send typing indicator back to sender
-        if event.get("sender_channel") == self.channel_name:
-            return
+        if event['sender_channel'] != self.channel_name:
+            await self.send(text_data=json.dumps({
+                'type': 'typing',
+                'username': event['username'],
+                'is_typing': event['is_typing']
+            }))
 
+    async def online_count(self, event):
         await self.send(text_data=json.dumps({
-            "type": "typing",
-            "username": event["username"],
-            "is_typing": event["is_typing"]
-        }))
-
-    async def user_count_update(self, event):
-        """Send online count update to WebSocket."""
-        # This is a simplified implementation
-        # In production, you would track actual connected users
-        await self.send(text_data=json.dumps({
-            "type": "online_count",
-            "action": event["action"]
+            'type': 'online_count',
+            'count': event['count']
         }))
 
     @database_sync_to_async
-    def save_message(self, username, message_text, user_color):
-        """Save message to database."""
-        from api.models import ChatMessage
-
-        message = ChatMessage.objects.create(
+    def save_message(self, username, user_color, message):
+        chat_message = ChatMessage.objects.create(
             username=username,
-            message=message_text,
-            user_color=user_color
+            user_color=user_color,
+            message=message
         )
-
-        return {
-            "id": message.id,
-            "username": message.username,
-            "message": message.message,
-            "user_color": message.user_color,
-            "timestamp": message.timestamp.isoformat()
-        }
+        serializer = ChatMessageSerializer(chat_message)
+        return serializer.data
